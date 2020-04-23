@@ -6,7 +6,7 @@ from PySide2.QtCore import Qt, QEvent, QRect
 
 MAX_RADIUS = 100
 
-class Overlay(QWidget):
+class OverlayWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(
@@ -23,15 +23,15 @@ class Overlay(QWidget):
         self.setAttribute(Qt.WA_TabletTracking)
 
         self.pixmap = QPixmap(self.width(), self.height())
-        self.pixmap.fill(QColor(0, 0, 0, 1))
+        self.pixmap.fill(QColor(0, 0, 0, 0))
         self.stroke_pixmap = QPixmap(self.width(), self.height())
-        self.stroke_pixmap.fill(QColor(0, 0, 0, 1))
+        self.stroke_pixmap.fill(QColor(0, 0, 0, 0))
 
         self.setCursor(Qt.CrossCursor)
 
     def _resize_pixmap(self, old_pixmap):
         new_pixmap = QPixmap(self.width() , self.height())
-        new_pixmap.fill(QColor(0, 0, 0, 1))
+        new_pixmap.fill(QColor(0, 0, 0, 0))
         painter = QPainter(new_pixmap)
         painter.drawPixmap(0, 0, old_pixmap)
         painter.end()
@@ -58,13 +58,21 @@ class Overlay(QWidget):
         elif e.type() == QEvent.TabletMove:
             if e.pointerType() == QTabletEvent.Eraser:
                 painter = QPainter(self.pixmap)
+                painter.setRenderHint(QPainter.Antialiasing)
                 painter.setPen(QPen(QColor(255, 255, 255, 0), e.pressure()**2*MAX_RADIUS))
                 painter.setCompositionMode(QPainter.CompositionMode_Clear)
                 self.paint(painter, e)
                 painter.end()
             else:
                 painter = QPainter(self.stroke_pixmap)
-                painter.setPen(QPen(QColor(0, 0, 0, 255), e.pressure()*MAX_RADIUS/10))
+                pen = QPen(
+                    QColor(0, 0, 0, 255),
+                    e.pressure()*MAX_RADIUS/10,
+                    Qt.SolidLine,
+                    Qt.RoundCap,
+                    Qt.BevelJoin,
+                )
+                painter.setPen(pen)
                 painter.setRenderHint(QPainter.Antialiasing)
                 self.paint(painter, e)
                 painter.end()
@@ -106,7 +114,7 @@ class Application(QApplication):
 
 if __name__ == '__main__':
     app = Application(sys.argv)
-    w = Overlay()
+    w = OverlayWidget()
 
     for screen in app.screens():
         if screen.manufacturer().startswith('Wacom'):
