@@ -4,10 +4,12 @@ import time
 
 from PySide2.QtWidgets import QApplication, QWidget
 from PySide2.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
-from PySide2.QtGui import QPainterPath, QCursor
-from PySide2.QtCore import Qt, QEvent, QRect, QTimer
+from PySide2.QtGui import QPainterPath, QCursor, QBitmap
+from PySide2.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
+from PySide2.QtUiTools import QUiLoader
 
 MAX_RADIUS = 100
+
 
 class Overlay():
     def __init__(self, topleft=None, pixmap=None):
@@ -19,6 +21,10 @@ class Overlay():
             )
         else:
             self.rect = None
+        self.blend_with_next = False
+
+    def __repr__(self):
+        return f'<Overlay {self.rect}>'
 
     def paint(self, painter):
         if self.rect:
@@ -68,9 +74,11 @@ class Overlay():
         else:
             yield None
 
+
 class OverlayWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self.setWindowTitle('pointout canvas')
         self.setWindowFlags(
             self.windowFlags()
             | Qt.Window
@@ -86,14 +94,28 @@ class OverlayWidget(QWidget):
 
         self.scribbles = []
         self.current_wet = Overlay()
+        self.undo_stack = []
 
-        self.setCursor(Qt.CrossCursor)
+        cursor_bitmap = QBitmap.fromData(QSize(5, 5), bytes((
+            0b00000, 0b00000, 0b00100, 0b00000, 0b00000,
+        )))
+        mask_bitmap = QBitmap.fromData(QSize(5, 5), bytes((
+            0b00100, 0b00000, 0b10101, 0b00000, 0b00100,
+        )))
+        self.setCursor(QCursor(cursor_bitmap, mask_bitmap))
 
         self.anim_timer = QTimer()
         self.anim_timer.timeout.connect(self.anim_update)
         self.anim_timer.start(1000//30)
         self.anim_timer.setTimerType(Qt.CoarseTimer)
-        self.last_update = time.monotonic()
+        self.wet_end = time.monotonic()
+
+        self.tools = {
+            'marker': Marker(),
+            'highlighter': Highlighter(),
+            'eraser': Eraser(),
+        }
+        self.tool = self.tools['marker']
 
     def _handle_timeout(self):
         self.anim_update()
@@ -111,7 +133,6 @@ class OverlayWidget(QWidget):
 
     def anim_update(self):
         if self.current_wet and self.current_wet.rect is not None:
-            print(self.last_update, self.last_update + 4, time.monotonic())
             with self.current_wet.painter_context() as painter:
                 painter.setBrush(QColor(0, 0, 0, 255))
                 painter.setPen(QPen(0))
@@ -119,14 +140,29 @@ class OverlayWidget(QWidget):
                 painter.setCompositionMode(QPainter.CompositionMode_DestinationOut)
                 painter.drawRect(self.current_wet.rect)
             self.update(self.current_wet.rect)
-            if self.last_update + 1 < time.monotonic():
+            if self.wet_end < time.monotonic():
                 self.current_wet = Overlay()
 
     def paintEvent(self, e):
         painter = QPainter(self);
         painter.setOpacity(0.5)
+        canvas = None
+        print([s.blend_with_next for s in self.scribbles])
         for scribble in self.scribbles:
-            scribble.paint(painter)
+            if scribble.rect:
+                if scribble.blend_with_next:
+                    if canvas is None:
+                        canvas = Overlay()
+                    canvas.add(scribble)
+                else:
+                    if canvas:
+                        canvas.add(scribble)
+                        canvas.paint(painter)
+                        canvas = None
+                    else:
+                        scribble.paint(painter)
+        if canvas:
+            canvas.paint(painter)
         painter.setOpacity(1)
         if self.current_wet:
             self.current_wet.paint(painter)
@@ -137,60 +173,32 @@ class OverlayWidget(QWidget):
         e.accept()
         if e.type() == QEvent.TabletPress:
             self.last_point = e.posF()
-            if not self.current_wet.rect:
-                self.scribbles.append(Overlay())
+            if self.current_wet.rect and self.scribbles:
+                self.scribbles[-1].blend_with_next = True
+            self.scribbles.append(Overlay())
+            print(len(self.scribbles))
         if e.type() in (QEvent.TabletMove, QEvent.TabletRelease):
+            tool = self.tool
+            if self.tool is None:
+                return
+            if e.pointerType() == QTabletEvent.Eraser:
+                tool = self.tools['eraser']
             if not self.scribbles:
                 self.scribbles.append(Overlay())
             if self.last_point:
-                size = e.pressure()*MAX_RADIUS
-                if e.pointerType() != QTabletEvent.Eraser:
-                    size /= 10
-                alpha = 255
-                if size < 1:
-                    alpha = int(255 * size)
-                    size = 1
+                tool.set_size(e.pressure())
                 update_rect = QRect(self.last_point.toPoint(), e.pos())
                 update_rect = update_rect.normalized().adjusted(
-                    -size-1, -size-1, size+1, size+1,
+                    -tool.size-1, -tool.size-1, tool.size+1, tool.size+1,
                 )
-                if e.pointerType() == QTabletEvent.Eraser:
-                    pen = QPen(
-                        QColor(255, 255, 255, 255),
-                        size,
-                        Qt.SolidLine,
-                        Qt.RoundCap,
-                        Qt.BevelJoin,
-                    )
-                    self.current_wet.reserve(update_rect)
-                    with self.current_wet.painter_context() as painter:
-                        painter.setPen(pen)
-                        painter.setRenderHint(QPainter.Antialiasing)
-                        painter.drawLine(self.last_point, e.posF())
-                    for overlay in self.scribbles:
-                        with overlay.painter_context() as painter:
-                            if overlay.rect:
-                                painter.setPen(pen)
-                                painter.setRenderHint(QPainter.Antialiasing)
-                                painter.setCompositionMode(QPainter.CompositionMode_Clear)
-                                painter.drawLine(self.last_point, e.posF())
-                else:
-                    pen = QPen(
-                        QColor(0, 0, 0, alpha),
-                        size,
-                        Qt.SolidLine,
-                        Qt.RoundCap,
-                        Qt.BevelJoin,
-                    )
-                    for overlay in self.scribbles[-1], self.current_wet:
-                        overlay.reserve(update_rect)
-                        with overlay.painter_context() as painter:
-                            painter.setPen(pen)
-                            painter.setRenderHint(QPainter.Antialiasing)
-                            painter.drawLine(self.last_point, e.posF())
+                tool.draw(
+                    self.last_point, e.posF(),
+                    update_rect,
+                    self.scribbles, self.current_wet
+                )
                 self.update(update_rect)
             self.last_point = e.posF()
-            self.last_update = time.monotonic()
+            self.update_wet()
         if e.type() == QEvent.TabletRelease:
             pass
         e.accept()
@@ -203,6 +211,132 @@ class OverlayWidget(QWidget):
         self.update(QRect(last_pos.toPoint(), e.pos()).normalized().adjusted(
             -MAX_RADIUS, -MAX_RADIUS, MAX_RADIUS, MAX_RADIUS))
 
+    def set_tool(self, tool_name):
+        self.tool = self.tools[tool_name]
+
+    def unset_tool(self):
+        self.tool = None
+
+    def clear(self):
+        while self.scribbles:
+            self.undo()
+
+    def undo(self):
+        if self.scribbles:
+            undone = self.scribbles.pop()
+            if not undone.rect:
+                self.undo()
+            else:
+                self.undo_stack.append(undone)
+                self.update(undone.rect)
+
+    def redo(self):
+        if self.undo_stack:
+            redone = self.undo_stack.pop()
+            self.scribbles.append(redone)
+            self.update(redone.rect)
+
+    def update_wet(self, seconds=1):
+        self.wet_end = time.monotonic() + seconds
+
+class Tool:
+    def __init__(self):
+        self.pen = QPen(
+            QColor(0, 0, 0, 0),
+            0,
+            Qt.SolidLine,
+            Qt.RoundCap,
+            Qt.BevelJoin,
+        )
+        self.set_size(1)
+
+    def set_size(self, size):
+        self.size = size
+        self.alpha = 255
+        if size < 1:
+            self.alpha = int(255 * size)
+            self.size = 1
+        self.pen.setWidth(self.size)
+        color = self.pen.color()
+        color.setAlpha(self.alpha)
+        self.pen.setColor(color)
+
+    def draw(self, last, now, update_rect, scribbles, wet):
+        for overlay in scribbles[-1], wet:
+            if overlay:
+                overlay.reserve(update_rect)
+                with overlay.painter_context() as painter:
+                    painter.setPen(self.pen)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    painter.drawLine(last, now)
+
+
+class Marker(Tool):
+    def set_size(self, size):
+        super().set_size(size * MAX_RADIUS / 10)
+
+
+class Highlighter(Tool):
+    def set_size(self, size):
+        self.pen.setColor(QColor(255, 250, 0, 255))
+        super().set_size(size * MAX_RADIUS / 2)
+
+
+class Eraser(Tool):
+    def set_size(self, size):
+        super().set_size(size * MAX_RADIUS)
+        self.pen.setColor(QColor(255, 255, 255, 255))
+
+    def draw(self, last, now, update_rect, scribbles, wet):
+        wet.reserve(update_rect)
+        with wet.painter_context() as painter:
+            painter.setPen(self.pen)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.drawLine(last, now)
+
+        for overlay in scribbles:
+            with overlay.painter_context() as painter:
+                if painter:
+                    painter.setPen(self.pen)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    painter.setCompositionMode(QPainter.CompositionMode_Clear)
+                    painter.drawLine(last, now)
+
+
+class WidgetFinder:
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __getattr__(self, name):
+        widget = self.obj.findChild(QWidget, name)
+        if widget is None:
+            raise AttributeError(name)
+        return widget
+
+class ToolboxWindow(QObject):
+    def __init__(self, overlay_widget, **args):
+        super().__init__(**args)
+        self.overlay_widget = overlay_widget
+        self.window = QUiLoader().load('toolbox.ui')
+        self.window.setWindowFlags(
+            self.window.windowFlags()
+            | Qt.FramelessWindowHint
+            | Qt.WindowStaysOnTopHint
+        )
+        tools = [Marker(), Eraser()]
+
+        ch = WidgetFinder(self.window)
+
+        def connect_click(name, func):
+            find(name).clicked.connect(func)
+
+        ch.btnDisable.clicked.connect(lambda: overlay_widget.unset_tool())
+        ch.btnMarker.clicked.connect(lambda: overlay_widget.set_tool('marker'))
+        ch.btnHighlighter.clicked.connect(lambda: overlay_widget.set_tool('highlighter'))
+        ch.btnEraser.clicked.connect(lambda: overlay_widget.set_tool('eraser'))
+        ch.btnClear.clicked.connect(lambda: overlay_widget.clear())
+        ch.btnUndo.clicked.connect(lambda: overlay_widget.undo())
+        ch.btnRedo.clicked.connect(lambda: overlay_widget.redo())
 
 class Application(QApplication):
     global grabbing_mouse
@@ -222,9 +356,13 @@ class Application(QApplication):
 
     def event(self, e):
         if e.type() == QEvent.TabletEnterProximity:
-            print('enter')
-            w.grabMouse()
+            print('enter', toolbox.window.geometry(), QCursor.pos())
+            if not toolbox.overlay_widget.tool:
+                return False
             self._grabbing_mouse = True
+            if toolbox.window.geometry().contains(QCursor.pos()):
+                return False
+            w.grabMouse()
             return True
         elif e.type() == QEvent.TabletLeaveProximity:
             print('leave')
@@ -249,5 +387,11 @@ if __name__ == '__main__':
             w.resize(geom.width(), geom.height())
 
     w.showFullScreen()
+
+    toolbox = ToolboxWindow(w)
+    toolbox.window.show()
+    toolbox.window.move(w.geometry().topLeft())
+
+    app._toolbox = toolbox
 
     sys.exit(app.exec_())
