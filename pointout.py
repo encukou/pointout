@@ -147,7 +147,6 @@ class OverlayWidget(QWidget):
         painter = QPainter(self);
         painter.setOpacity(0.5)
         canvas = None
-        print([s.blend_with_next for s in self.scribbles])
         for scribble in self.scribbles:
             if scribble.rect:
                 if scribble.blend_with_next:
@@ -176,7 +175,6 @@ class OverlayWidget(QWidget):
             if self.current_wet.rect and self.scribbles:
                 self.scribbles[-1].blend_with_next = True
             self.scribbles.append(Overlay())
-            print(len(self.scribbles))
         if e.type() in (QEvent.TabletMove, QEvent.TabletRelease):
             tool = self.tool
             if self.tool is None:
@@ -323,12 +321,10 @@ class ToolboxWindow(QObject):
             | Qt.FramelessWindowHint
             | Qt.WindowStaysOnTopHint
         )
+        self.window.resize(0, 0)
         tools = [Marker(), Eraser()]
 
         ch = WidgetFinder(self.window)
-
-        def connect_click(name, func):
-            find(name).clicked.connect(func)
 
         ch.btnDisable.clicked.connect(lambda: overlay_widget.unset_tool())
         ch.btnMarker.clicked.connect(lambda: overlay_widget.set_tool('marker'))
@@ -337,6 +333,7 @@ class ToolboxWindow(QObject):
         ch.btnClear.clicked.connect(lambda: overlay_widget.clear())
         ch.btnUndo.clicked.connect(lambda: overlay_widget.undo())
         ch.btnRedo.clicked.connect(lambda: overlay_widget.redo())
+        ch.btnClose.clicked.connect(QApplication.quit)
 
 class Application(QApplication):
     global grabbing_mouse
