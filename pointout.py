@@ -114,6 +114,12 @@ class OverlayWidget(QWidget):
             'marker': Marker(),
             'highlighter': Highlighter(),
             'eraser': Eraser(),
+            'red': ColorMarker(1, 0, 0),
+            'green': ColorMarker(0, 1, 0),
+            'blue': ColorMarker(0, 0, 1),
+            'yellow': ColorMarker(1, 1, 0),
+            'purple': ColorMarker(1, 0, 1),
+            'cyan': ColorMarker(0, 1, 1),
         }
         self.tool = self.tools['marker']
 
@@ -274,6 +280,15 @@ class Marker(Tool):
         super().set_size(size * MAX_RADIUS / 10)
 
 
+class ColorMarker(Tool):
+    def __init__(self, r, g, b):
+        super().__init__()
+        self.pen.setColor(QColor(int(r*255), int(g*255), int(b*255)))
+
+    def set_size(self, size):
+        super().set_size(size * MAX_RADIUS / 5)
+
+
 class Highlighter(Tool):
     def set_size(self, size):
         self.pen.setColor(QColor(255, 250, 0, 255))
@@ -334,6 +349,13 @@ class ToolboxWindow(QObject):
         ch.btnUndo.clicked.connect(lambda: overlay_widget.undo())
         ch.btnRedo.clicked.connect(lambda: overlay_widget.redo())
         ch.btnClose.clicked.connect(QApplication.quit)
+
+        ch.btnRed.clicked.connect(lambda: overlay_widget.set_tool('red'))
+        ch.btnGreen.clicked.connect(lambda: overlay_widget.set_tool('green'))
+        ch.btnBlue.clicked.connect(lambda: overlay_widget.set_tool('blue'))
+        ch.btnYellow.clicked.connect(lambda: overlay_widget.set_tool('yellow'))
+        ch.btnPurple.clicked.connect(lambda: overlay_widget.set_tool('purple'))
+        ch.btnCyan.clicked.connect(lambda: overlay_widget.set_tool('cyan'))
 
 class Application(QApplication):
     global grabbing_mouse
