@@ -2,7 +2,7 @@ import sys
 import contextlib
 import time
 
-from PySide6.QtWidgets import QApplication, QWidget
+from PySide6.QtWidgets import QApplication, QWidget, QToolButton, QSizePolicy
 from PySide6.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
 from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon
 from PySide6.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
@@ -11,6 +11,9 @@ from PySide6.QtUiTools import QUiLoader
 
 MAX_RADIUS = 100
 
+COLORS = (
+    (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1),
+)
 
 class Overlay():
     def __init__(self, topleft=None, pixmap=None):
@@ -77,6 +80,8 @@ class Overlay():
 
 class OverlayWidget(QWidget):
     grab_updated = Signal(bool)
+    _last_cursor_pos = None
+    _grabbing_mouse = False
 
     def __init__(self):
         super().__init__()
@@ -112,19 +117,18 @@ class OverlayWidget(QWidget):
         self.anim_timer.setTimerType(Qt.CoarseTimer)
         self.wet_end = time.monotonic()
 
-        self.tools = {
-            'marker': Marker(),
-            'highlighter': Highlighter(),
-            'eraser': Eraser(),
-            'red': ColorMarker(1, 0, 0),
-            'green': ColorMarker(0, 1, 0),
-            'blue': ColorMarker(0, 0, 1),
-            'yellow': ColorMarker(1, 1, 0),
-            'purple': ColorMarker(1, 0, 1),
-            'cyan': ColorMarker(0, 1, 1),
-        }
-        self.tool = self.tools['marker']
+        self.eraser = Eraser()
+        self.tool = Marker()
         self.last_point = 0
+
+    @property
+    def tool(self):
+        return self._tool
+    @tool.setter
+    def tool(self, new_tool):
+        self._tool = new_tool
+        if new_tool is None:
+            self.update_grab(False)
 
     def anim_update(self):
         if self.current_wet.rect is not None:
@@ -178,7 +182,7 @@ class OverlayWidget(QWidget):
         if self.tool is None:
             return
         if erase:
-            tool = self.tools['eraser']
+            tool = self.eraser
         if not self.scribbles:
             self.scribbles.append(Overlay())
         if self.last_point:
@@ -195,12 +199,6 @@ class OverlayWidget(QWidget):
             self.update(update_rect)
         self.last_point = pos
         self.update_wet()
-
-    def set_tool(self, tool_name):
-        self.tool = self.tools[tool_name]
-
-    def unset_tool(self):
-        self.tool = None
 
     def clear(self):
         while self.scribbles:
@@ -229,6 +227,9 @@ class OverlayWidget(QWidget):
         self.wet_end = time.monotonic() + seconds
 
     def update_grab(self, grab):
+        was_grabbing_mouse = self._grabbing_mouse
+        if self.tool is None:
+            grab = False
         if grab:
             if not self.tool:
                 return False
@@ -237,7 +238,8 @@ class OverlayWidget(QWidget):
         else:
             self.releaseMouse()
             self._grabbing_mouse = False
-            QCursor.setPos(self._last_cursor_pos)
+            if self._last_cursor_pos:
+                QCursor.setPos(self._last_cursor_pos)
         self.grab_updated.emit(self._grabbing_mouse)
 
 class Tool:
@@ -323,6 +325,15 @@ class WidgetFinder:
             raise AttributeError(name)
         return widget
 
+def make_tool_button(text, shortcut):
+    btn = QToolButton()
+    btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    btn.setText(text)
+    btn.setShortcut(shortcut)
+    btn.setCheckable(True)
+    btn.setAutoExclusive(True)
+    return btn
+
 def make_toolbox_window(overlay_widget):
     window = QUiLoader().load('toolbox.ui')
     window.setWindowFlags(
@@ -334,17 +345,40 @@ def make_toolbox_window(overlay_widget):
 
     ch = WidgetFinder(window)
 
-    ch.btnDisable.clicked.connect(overlay_widget.unset_tool)
-    ch.btnMarker.clicked.connect(lambda: overlay_widget.set_tool('marker'))
-    ch.btnHighlighter.clicked.connect(lambda: overlay_widget.set_tool('highlighter'))
-    ch.btnEraser.clicked.connect(lambda: overlay_widget.set_tool('eraser'))
+    def tool_setter(tool):
+        def func():
+            overlay_widget.tool = tool
+        return func
 
-    ch.btnRed.clicked.connect(lambda: overlay_widget.set_tool('red'))
-    ch.btnGreen.clicked.connect(lambda: overlay_widget.set_tool('green'))
-    ch.btnBlue.clicked.connect(lambda: overlay_widget.set_tool('blue'))
-    ch.btnYellow.clicked.connect(lambda: overlay_widget.set_tool('yellow'))
-    ch.btnPurple.clicked.connect(lambda: overlay_widget.set_tool('purple'))
-    ch.btnCyan.clicked.connect(lambda: overlay_widget.set_tool('cyan'))
+    ch.btnDisable.clicked.connect(tool_setter(None))
+    ch.btnMarker.clicked.connect(tool_setter(Marker()))
+    ch.btnHighlighter.clicked.connect(tool_setter(Highlighter()))
+    ch.btnEraser.clicked.connect(tool_setter(Eraser()))
+
+    for group in ch.hlColors, ch.hlMainTools:
+        while (item := group.takeAt(0)) and (widget := item.widget()):
+            widget.deleteLater()
+
+    for text, shortcut, tool, activate in (
+        ("Disable", "D", None, False),
+        ("Marker", "M", Marker(), True),
+        ("Hilite", "H", Highlighter(), False),
+        ("Eraser", "E", Eraser(), False),
+    ):
+        btn = make_tool_button(text, shortcut)
+        ch.hlMainTools.addWidget(btn)
+        if activate:
+            btn.setChecked(True)
+        btn.clicked.connect(tool_setter(tool))
+
+    for i, color in enumerate(COLORS, 1):
+        tool = ColorMarker(*color)
+        btn = make_tool_button(str(i), str(i))
+        btn.setStyleSheet("background-color: rgb({}, {}, {});".format(
+            *[c*255 for c in color])
+        )
+        ch.hlColors.addWidget(btn)
+        btn.clicked.connect(tool_setter(tool))
 
     ch.actClear.triggered.connect(overlay_widget.clear)
     ch.actUndo.triggered.connect(overlay_widget.undo)
