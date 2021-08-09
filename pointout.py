@@ -8,8 +8,9 @@ from PySide6.QtWidgets import QMainWindow
 from PySide6.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
 from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon, QAction
 from PySide6.QtGui import QUndoStack, QUndoCommand, QStandardItemModel
+from PySide6.QtGui import QStandardItem, QUndoGroup
 from PySide6.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
-from PySide6.QtCore import Signal, QPointF, QRectF, QSizeF
+from PySide6.QtCore import Signal, QPointF, QRectF, QSizeF, QItemSelectionModel
 from PySide6.QtUiTools import QUiLoader
 
 MAX_RADIUS = 100
@@ -111,29 +112,18 @@ class DrawCommand(QUndoCommand):
             self.widget.update(self.scribble.rect)
 
 
-class ClearCommand(QUndoCommand):
+class PictureItem(QStandardItem):
     def __init__(self, widget):
-        super().__init__("Clear")
-        self.widget = widget
-        self.scribbles = list(widget.scribbles)
-        self.new_scribbles = []
-
-    def text(self):
-        return "Clear screen"
-
-    def undo(self):
-        self.widget.scribbles = self.scribbles
-        self.widget.current_wet = Overlay()
-        self.widget.update()
-
-    def redo(self):
-        self.widget.scribbles = self.new_scribbles
-        self.widget.current_wet = Overlay()
-        self.widget.update()
+        super().__init__("Drawing")
+        self.scribbles = []
+        self.undo_stack = QUndoStack()
+        widget.undo_group.addStack(self.undo_stack)
 
 
 class OverlayWidget(QWidget):
     grab_updated = Signal(bool)
+    can_clear_changed = Signal(bool)
+    can_clear = True
     _last_cursor_pos = None
     _grabbing_mouse = False
 
@@ -153,9 +143,14 @@ class OverlayWidget(QWidget):
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_TabletTracking)
 
-        self.scribbles = []
         self.current_wet = Overlay()
-        self.undo_stack = QUndoStack()
+
+        self.undo_group = QUndoGroup()
+        self.picture_model = QStandardItemModel()
+        self.selection_model = QItemSelectionModel(self.picture_model)
+        self.clear()
+        self.selection_model.currentChanged.connect(self.picture_switched)
+        self.picture_switched()
 
         cursor_bitmap = QBitmap.fromData(QSize(5, 5), bytes((
             0b00000, 0b00000, 0b00100, 0b00000, 0b00000,
@@ -174,6 +169,31 @@ class OverlayWidget(QWidget):
         self.eraser = Eraser()
         self.tool = Marker()
         self.last_point = 0
+
+    def picture_switched(self):
+        self.undo_group.setActiveStack(self.picture.undo_stack)
+        self.check_can_clear()
+        self.update()
+
+    def check_can_clear(self):
+        can_clear = bool(self.scribbles)
+        was_can_clear = self.can_clear
+        self.can_clear = can_clear
+        if can_clear != was_can_clear:
+            self.can_clear_changed.emit(can_clear)
+
+    @property
+    def picture(self):
+        idx = self.selection_model.currentIndex()
+        return self.picture_model.itemFromIndex(idx)
+
+    @property
+    def scribbles(self):
+        return self.picture.scribbles
+
+    @property
+    def undo_stack(self):
+        return self.picture.undo_stack
 
     @property
     def tool(self):
@@ -230,6 +250,7 @@ class OverlayWidget(QWidget):
         self.last_point = pos
         cmd = DrawCommand(self, self.tool)
         self.undo_stack.push(cmd)
+        self.check_can_clear()
 
     def add_point(self, pos, *, pressure=0.5, erase=False):
         tool = self.tool
@@ -255,7 +276,17 @@ class OverlayWidget(QWidget):
         self.update_wet()
 
     def clear(self):
-        self.undo_stack.push(ClearCommand(self))
+        if self.can_clear:
+            pi = PictureItem(self)
+            idx = self.selection_model.currentIndex()
+            if idx:
+                self.picture_model.insertRow(idx.row() + 1, pi)
+            else:
+                self.picture_model.appendRow(pi)
+            self.selection_model.setCurrentIndex(
+                self.picture_model.indexFromItem(pi),
+                QItemSelectionModel.ClearAndSelect,
+            )
 
     def undo(self):
         self.undo_stack.undo()
@@ -440,21 +471,26 @@ def make_toolbox_window(overlay_widget):
         return act
 
     for action_factory, icon, shortcut in (
-        (overlay_widget.undo_stack.createUndoAction, 'edit-undo-symbolic', 'Z'),
-        (overlay_widget.undo_stack.createRedoAction, 'edit-redo-symbolic', 'Y'),
+        (overlay_widget.undo_group.createUndoAction, 'edit-undo-symbolic', 'Z'),
+        (overlay_widget.undo_group.createRedoAction, 'edit-redo-symbolic', 'Y'),
     ):
         act = action_factory(window)
         act.setIcon(QIcon.fromTheme(icon))
         act.setShortcut(shortcut)
         toolbar.addAction(act)
 
-    add_action('Clear', overlay_widget.clear, 'edit-clear-all-symbolic', 'Q')
+    clr = add_action('Clear', overlay_widget.clear, 'document-new-symbolic', 'Q')
+    overlay_widget.can_clear_changed.connect(clr.setEnabled)
+    clr.setEnabled(overlay_widget.can_clear)
     toolbar.addSeparator()
     add_action('Close', sys.exit, 'process-stop-symbolic')
 
     layout = add_layout()
-    layout.addWidget(QListView())
-    layout.addWidget(QUndoView(overlay_widget.undo_stack))
+    ilv = QListView()
+    ilv.setModel(overlay_widget.picture_model)
+    ilv.setSelectionModel(overlay_widget.selection_model)
+    layout.addWidget(ilv)
+    layout.addWidget(QUndoView(overlay_widget.undo_group))
 
     return window
 
