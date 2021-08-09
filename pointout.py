@@ -3,19 +3,28 @@ import contextlib
 import time
 
 from PySide6.QtWidgets import QApplication, QWidget, QToolButton, QSizePolicy
+from PySide6.QtWidgets import QUndoView
 from PySide6.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
 from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon
+from PySide6.QtGui import QUndoStack, QUndoCommand
 from PySide6.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
 from PySide6.QtCore import Signal, QPointF, QRectF, QSizeF
 from PySide6.QtUiTools import QUiLoader
 
 MAX_RADIUS = 100
 
-COLORS = (
-    (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0), (1, 0, 1), (0, 1, 1),
-)
+COLORS = {
+    'Red': (1, 0, 0),
+    'Green': (0, 1, 0),
+    'Blue': (0, 0, 1),
+    'Yellow': (1, 1, 0),
+    'Purple': (1, 0, 1),
+    'Cyan': (0, 1, 1),
+}
 
 class Overlay():
+    composition_mode = QPainter.CompositionMode_SourceOver
+    opacity = 0.5
     def __init__(self, topleft=None, pixmap=None):
         self.pixmap = pixmap
         if topleft and pixmap:
@@ -31,6 +40,8 @@ class Overlay():
 
     def paint(self, painter):
         if self.rect:
+            painter.setOpacity(self.opacity)
+            painter.setCompositionMode(self.composition_mode)
             painter.drawPixmap(self.rect.topLeft(), self.pixmap)
 
     def reserve(self, rect):
@@ -78,6 +89,48 @@ class Overlay():
             yield None
 
 
+class DrawCommand(QUndoCommand):
+    def __init__(self, widget, tool):
+        super().__init__(f"Draw with {tool.name}")
+        self.widget = widget
+        self.scribbles = widget.scribbles
+        self.scribble = Overlay()
+        self.tool = tool
+
+    def undo(self):
+        popped = self.scribbles.pop()
+        self.widget.current_wet = Overlay()
+        if popped.rect:
+            self.widget.update(popped.rect)
+            assert popped == self.scribble
+
+    def redo(self):
+        self.scribbles.append(self.scribble)
+        if self.scribble.rect:
+            self.widget.update(self.scribble.rect)
+
+
+class ClearCommand(QUndoCommand):
+    def __init__(self, widget):
+        super().__init__("Clear")
+        self.widget = widget
+        self.scribbles = list(widget.scribbles)
+        self.new_scribbles = []
+
+    def text(self):
+        return "Clear screen"
+
+    def undo(self):
+        self.widget.scribbles = self.scribbles
+        self.widget.current_wet = Overlay()
+        self.widget.update()
+
+    def redo(self):
+        self.widget.scribbles = self.new_scribbles
+        self.widget.current_wet = Overlay()
+        self.widget.update()
+
+
 class OverlayWidget(QWidget):
     grab_updated = Signal(bool)
     _last_cursor_pos = None
@@ -101,7 +154,7 @@ class OverlayWidget(QWidget):
 
         self.scribbles = []
         self.current_wet = Overlay()
-        self.undo_stack = []
+        self.undo_stack = QUndoStack()
 
         cursor_bitmap = QBitmap.fromData(QSize(5, 5), bytes((
             0b00000, 0b00000, 0b00100, 0b00000, 0b00000,
@@ -144,7 +197,6 @@ class OverlayWidget(QWidget):
 
     def paintEvent(self, e):
         painter = QPainter(self)
-        painter.setOpacity(0.5)
         canvas = None
         for scribble in self.scribbles:
             if scribble.rect:
@@ -175,7 +227,8 @@ class OverlayWidget(QWidget):
 
     def start_line(self, pos):
         self.last_point = pos
-        self.scribbles.append(Overlay())
+        cmd = DrawCommand(self, self.tool)
+        self.undo_stack.push(cmd)
 
     def add_point(self, pos, *, pressure=0.5, erase=False):
         tool = self.tool
@@ -184,7 +237,7 @@ class OverlayWidget(QWidget):
         if erase:
             tool = self.eraser
         if not self.scribbles:
-            self.scribbles.append(Overlay())
+            self.start_line(pos)
         if self.last_point:
             tool.set_size(pressure)
             update_rect = QRect(self.last_point.toPoint(), pos.toPoint())
@@ -201,27 +254,13 @@ class OverlayWidget(QWidget):
         self.update_wet()
 
     def clear(self):
-        while self.scribbles:
-            self.undo()
+        self.undo_stack.push(ClearCommand(self))
 
     def undo(self):
-        if self.scribbles:
-            undone = self.scribbles.pop()
-            if not undone.rect:
-                self.undo()
-            else:
-                self.undo_stack.append(undone)
-                self.update(undone.rect)
-                self.current_wet = Overlay()
-                #self.update_wet()
+        self.undo_stack.undo()
 
     def redo(self):
-        if self.undo_stack:
-            redone = self.undo_stack.pop()
-            self.scribbles.append(redone)
-            self.update(redone.rect)
-            #self.current_wet.add(redone)
-            #self.update_wet()
+        self.undo_stack.redo()
 
     def update_wet(self, seconds=1):
         self.wet_end = time.monotonic() + seconds
@@ -243,6 +282,8 @@ class OverlayWidget(QWidget):
         self.grab_updated.emit(self._grabbing_mouse)
 
 class Tool:
+    name = 'tool'
+
     def __init__(self):
         self.pen = QPen(
             QColor(0, 0, 0, 0),
@@ -275,44 +316,41 @@ class Tool:
 
 
 class Marker(Tool):
+    name = 'Marker'
     def set_size(self, size):
         super().set_size(size * MAX_RADIUS / 10)
 
 
 class ColorMarker(Tool):
-    def __init__(self, r, g, b):
+    name = 'Color Marker'
+    def __init__(self, r, g, b, name=None):
         super().__init__()
         self.pen.setColor(QColor(int(r*255), int(g*255), int(b*255)))
+        if name:
+            self.name = f'{name} Marker'
 
     def set_size(self, size):
         super().set_size(size * MAX_RADIUS / 5)
 
 
 class Highlighter(Tool):
+    name = 'Highlighter'
     def set_size(self, size):
         self.pen.setColor(QColor(255, 250, 0, 255))
         super().set_size(size * MAX_RADIUS / 2)
 
 
 class Eraser(Tool):
+    name = 'Eraser'
     def set_size(self, size):
         super().set_size(size * MAX_RADIUS)
         self.pen.setColor(QColor(255, 255, 255, 255))
 
     def draw(self, last, now, update_rect, scribbles, wet):
-        wet.reserve(update_rect)
-        with wet.painter_context() as painter:
-            painter.setPen(self.pen)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.drawLine(last, now)
-
-        for overlay in scribbles:
-            with overlay.painter_context() as painter:
-                if painter:
-                    painter.setPen(self.pen)
-                    painter.setRenderHint(QPainter.Antialiasing)
-                    painter.setCompositionMode(QPainter.CompositionMode_Clear)
-                    painter.drawLine(last, now)
+        overlay = scribbles[-1]
+        overlay.composition_mode = QPainter.CompositionMode_DestinationOut
+        overlay.opacity = 1
+        super().draw(last, now, update_rect, scribbles, wet)
 
 
 class WidgetFinder:
@@ -371,13 +409,14 @@ def make_toolbox_window(overlay_widget):
             btn.setChecked(True)
         btn.clicked.connect(tool_setter(tool))
 
-    for i, color in enumerate(COLORS, 1):
-        tool = ColorMarker(*color)
+    for i, (name, color) in enumerate(COLORS.items(), 1):
+        tool = ColorMarker(*color, name)
         btn = make_tool_button(str(i), str(i))
         btn.setStyleSheet("background-color: rgb({}, {}, {});".format(
             *[c*255 for c in color])
         )
         ch.hlColors.addWidget(btn)
+        btn.setToolTip(name)
         btn.clicked.connect(tool_setter(tool))
 
     ch.actClear.triggered.connect(overlay_widget.clear)
@@ -387,6 +426,8 @@ def make_toolbox_window(overlay_widget):
     ch.actDrawing.toggled.connect(overlay_widget.update_grab)
 
     overlay_widget.grab_updated.connect(ch.actDrawing.setChecked)
+
+    ch.centralwidget.layout().addWidget(QUndoView(overlay_widget.undo_stack))
 
     return window
 
