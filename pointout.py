@@ -3,10 +3,11 @@ import contextlib
 import time
 
 from PySide6.QtWidgets import QApplication, QWidget, QToolButton, QSizePolicy
-from PySide6.QtWidgets import QUndoView
+from PySide6.QtWidgets import QUndoView, QHBoxLayout, QVBoxLayout, QListView
+from PySide6.QtWidgets import QMainWindow
 from PySide6.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
-from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon
-from PySide6.QtGui import QUndoStack, QUndoCommand
+from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon, QAction
+from PySide6.QtGui import QUndoStack, QUndoCommand, QStandardItemModel
 from PySide6.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
 from PySide6.QtCore import Signal, QPointF, QRectF, QSizeF
 from PySide6.QtUiTools import QUiLoader
@@ -373,41 +374,43 @@ def make_tool_button(text, shortcut):
     return btn
 
 def make_toolbox_window(overlay_widget):
-    window = QUiLoader().load('toolbox.ui')
+    window = QMainWindow()
     window.setWindowFlags(
         window.windowFlags()
         | Qt.FramelessWindowHint
         | Qt.WindowStaysOnTopHint
     )
     window.resize(0, 0)
+    central = QWidget()
+    window.setCentralWidget(central)
+    main_layout = QVBoxLayout()
+    central.setLayout(main_layout)
 
-    ch = WidgetFinder(window)
+    def add_layout():
+        layout = QHBoxLayout(window)
+        main_layout.addLayout(layout)
+        return layout
 
     def tool_setter(tool):
         def func():
             overlay_widget.tool = tool
         return func
 
-    ch.btnDisable.clicked.connect(tool_setter(None))
-    ch.btnMarker.clicked.connect(tool_setter(Marker()))
-    ch.btnHighlighter.clicked.connect(tool_setter(Highlighter()))
-    ch.btnEraser.clicked.connect(tool_setter(Eraser()))
-
-    for group in ch.hlColors, ch.hlMainTools:
-        while (item := group.takeAt(0)) and (widget := item.widget()):
-            widget.deleteLater()
+    layout = add_layout()
 
     for text, shortcut, tool, activate in (
-        ("Disable", "D", None, False),
-        ("Marker", "M", Marker(), True),
-        ("Hilite", "H", Highlighter(), False),
-        ("Eraser", "E", Eraser(), False),
+        ("&Disable", "D", None, False),
+        ("&Marker", "M", Marker(), True),
+        ("&Hilite", "H", Highlighter(), False),
+        ("&Eraser", "E", Eraser(), False),
     ):
         btn = make_tool_button(text, shortcut)
-        ch.hlMainTools.addWidget(btn)
+        layout.addWidget(btn)
         if activate:
             btn.setChecked(True)
         btn.clicked.connect(tool_setter(tool))
+
+    layout = add_layout()
 
     for i, (name, color) in enumerate(COLORS.items(), 1):
         tool = ColorMarker(*color, name)
@@ -415,19 +418,43 @@ def make_toolbox_window(overlay_widget):
         btn.setStyleSheet("background-color: rgb({}, {}, {});".format(
             *[c*255 for c in color])
         )
-        ch.hlColors.addWidget(btn)
+        layout.addWidget(btn)
         btn.setToolTip(name)
         btn.clicked.connect(tool_setter(tool))
 
-    ch.actClear.triggered.connect(overlay_widget.clear)
-    ch.actUndo.triggered.connect(overlay_widget.undo)
-    ch.actRedo.triggered.connect(overlay_widget.redo)
-    ch.actClose.triggered.connect(sys.exit)
-    ch.actDrawing.toggled.connect(overlay_widget.update_grab)
+    toolbar = window.addToolBar("Main toolbar")
 
-    overlay_widget.grab_updated.connect(ch.actDrawing.setChecked)
+    act_draw = QAction('Draw', window)
+    act_draw.setCheckable(True)
+    act_draw.setShortcut('Esc')
+    act_draw.toggled.connect(overlay_widget.update_grab)
+    overlay_widget.grab_updated.connect(act_draw.setChecked)
+    toolbar.addAction(act_draw)
 
-    ch.centralwidget.layout().addWidget(QUndoView(overlay_widget.undo_stack))
+    def add_action(text, func, icon, shortcut=None):
+        act = QAction(QIcon.fromTheme(icon), text, window)
+        act.triggered.connect(func)
+        if shortcut:
+            act.setShortcut(shortcut)
+        toolbar.addAction(act)
+        return act
+
+    for action_factory, icon, shortcut in (
+        (overlay_widget.undo_stack.createUndoAction, 'edit-undo-symbolic', 'Z'),
+        (overlay_widget.undo_stack.createRedoAction, 'edit-redo-symbolic', 'Y'),
+    ):
+        act = action_factory(window)
+        act.setIcon(QIcon.fromTheme(icon))
+        act.setShortcut(shortcut)
+        toolbar.addAction(act)
+
+    add_action('Clear', overlay_widget.clear, 'edit-clear-all-symbolic', 'Q')
+    toolbar.addSeparator()
+    add_action('Close', sys.exit, 'process-stop-symbolic')
+
+    layout = add_layout()
+    layout.addWidget(QListView())
+    layout.addWidget(QUndoView(overlay_widget.undo_stack))
 
     return window
 
