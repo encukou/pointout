@@ -27,8 +27,10 @@ COLORS = {
 class Overlay():
     composition_mode = QPainter.CompositionMode_SourceOver
     opacity = 0.5
-    def __init__(self, topleft=None, pixmap=None):
+    _final = None
+    def __init__(self, topleft=None, pixmap=None, prev=None):
         self.pixmap = pixmap
+        self.prev = prev
         if topleft and pixmap:
             self.rect = QRect(
                 topleft.x(), topleft.y(),
@@ -36,6 +38,11 @@ class Overlay():
             )
         else:
             self.rect = None
+
+    def _opaque_copy(self):
+        result = Overlay(self.rect.topLeft(), self.pixmap.copy())
+        result.opacity = 1
+        return result
 
     def __repr__(self):
         return f'<Overlay {self.rect}>'
@@ -80,6 +87,7 @@ class Overlay():
 
     @contextlib.contextmanager
     def painter_context(self):
+        self._final = None
         if self.pixmap:
             painter = QPainter(self.pixmap)
             painter.translate(-self.rect.topLeft())
@@ -90,13 +98,31 @@ class Overlay():
         else:
             yield None
 
+    @property
+    def final(self):
+        if self._final:
+            return self._final
+        if self.prev and self.prev.final.pixmap:
+            self._final = self.prev.final._opaque_copy()
+        else:
+            self._final = Overlay()
+            self._final.opacity = 1
+        if self.pixmap:
+            self._final.reserve(self.rect)
+            with self._final.painter_context() as painter:
+                self.paint(painter)
+        return self._final
+
 
 class DrawCommand(QUndoCommand):
     def __init__(self, widget, tool):
         super().__init__(f"Draw with {tool.name}")
         self.widget = widget
         self.scribbles = widget.scribbles
-        self.scribble = Overlay()
+        if self.scribbles:
+            self.scribble = Overlay(prev=self.scribbles[-1])
+        else:
+            self.scribble = Overlay()
         self.tool = tool
 
     def undo(self):
@@ -117,7 +143,24 @@ class PictureItem(QStandardItem):
         super().__init__("Drawing")
         self.scribbles = []
         self.undo_stack = QUndoStack()
+        self.undo_stack.indexChanged.connect(self.reset_props)
+        self.widget = widget
         widget.undo_group.addStack(self.undo_stack)
+
+    def start_scribble(self):
+        cmd = DrawCommand(self.widget, self.widget.tool)
+        self.undo_stack.push(cmd)
+
+    def reset_props(self):
+        self.setText(f"Drawing ({self.undo_stack.index()})")
+        if self.scribbles:
+            s = self.scribbles[-1]
+            if s.final.pixmap:
+                self.setIcon(s.final.pixmap)
+            else:
+                self.setIcon(QIcon())
+        else:
+            self.setIcon(QIcon())
 
 
 class OverlayWidget(QWidget):
@@ -218,12 +261,8 @@ class OverlayWidget(QWidget):
 
     def paintEvent(self, e):
         painter = QPainter(self)
-        canvas = None
-        for scribble in self.scribbles:
-            if scribble.rect:
-                scribble.paint(painter)
-        if canvas:
-            canvas.paint(painter)
+        if self.scribbles:
+            self.scribbles[-1].final.paint(painter)
         painter.setOpacity(1)
         if self.current_wet:
             self.current_wet.paint(painter)
@@ -248,8 +287,7 @@ class OverlayWidget(QWidget):
 
     def start_line(self, pos):
         self.last_point = pos
-        cmd = DrawCommand(self, self.tool)
-        self.undo_stack.push(cmd)
+        self.picture.start_scribble()
         self.check_can_clear()
 
     def add_point(self, pos, *, pressure=0.5, erase=False):
@@ -273,6 +311,7 @@ class OverlayWidget(QWidget):
             )
             self.update(update_rect)
         self.last_point = pos
+        self.picture.reset_props()
         self.update_wet()
 
     def clear(self):
