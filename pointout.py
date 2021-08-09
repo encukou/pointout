@@ -76,6 +76,8 @@ class Overlay():
 
 
 class OverlayWidget(QWidget):
+    grab_updated = Signal(bool)
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle('pointout canvas')
@@ -137,7 +139,7 @@ class OverlayWidget(QWidget):
                 self.current_wet = Overlay()
 
     def paintEvent(self, e):
-        painter = QPainter(self);
+        painter = QPainter(self)
         painter.setOpacity(0.5)
         canvas = None
         for scribble in self.scribbles:
@@ -226,6 +228,18 @@ class OverlayWidget(QWidget):
     def update_wet(self, seconds=1):
         self.wet_end = time.monotonic() + seconds
 
+    def update_grab(self, grab):
+        if grab:
+            if not self.tool:
+                return False
+            self._grabbing_mouse = True
+            self.grabMouse()
+        else:
+            self.releaseMouse()
+            self._grabbing_mouse = False
+            QCursor.setPos(self._last_cursor_pos)
+        self.grab_updated.emit(self._grabbing_mouse)
+
 class Tool:
     def __init__(self):
         self.pen = QPen(
@@ -309,43 +323,52 @@ class WidgetFinder:
             raise AttributeError(name)
         return widget
 
-class ToolboxWindow(QObject):
-    def __init__(self, overlay_widget, **args):
-        super().__init__(**args)
-        self.overlay_widget = overlay_widget
-        self.window = QUiLoader().load('toolbox.ui')
-        self.window.setWindowFlags(
-            self.window.windowFlags()
-            | Qt.FramelessWindowHint
-            | Qt.WindowStaysOnTopHint
-        )
-        self.window.resize(0, 0)
+def make_toolbox_window(overlay_widget):
+    window = QUiLoader().load('toolbox.ui')
+    window.setWindowFlags(
+        window.windowFlags()
+        | Qt.FramelessWindowHint
+        | Qt.WindowStaysOnTopHint
+    )
+    window.resize(0, 0)
 
-        ch = WidgetFinder(self.window)
+    ch = WidgetFinder(window)
 
-        ch.btnDisable.clicked.connect(overlay_widget.unset_tool)
-        ch.btnMarker.clicked.connect(lambda: overlay_widget.set_tool('marker'))
-        ch.btnHighlighter.clicked.connect(lambda: overlay_widget.set_tool('highlighter'))
-        ch.btnEraser.clicked.connect(lambda: overlay_widget.set_tool('eraser'))
+    ch.btnDisable.clicked.connect(overlay_widget.unset_tool)
+    ch.btnMarker.clicked.connect(lambda: overlay_widget.set_tool('marker'))
+    ch.btnHighlighter.clicked.connect(lambda: overlay_widget.set_tool('highlighter'))
+    ch.btnEraser.clicked.connect(lambda: overlay_widget.set_tool('eraser'))
 
-        ch.btnRed.clicked.connect(lambda: overlay_widget.set_tool('red'))
-        ch.btnGreen.clicked.connect(lambda: overlay_widget.set_tool('green'))
-        ch.btnBlue.clicked.connect(lambda: overlay_widget.set_tool('blue'))
-        ch.btnYellow.clicked.connect(lambda: overlay_widget.set_tool('yellow'))
-        ch.btnPurple.clicked.connect(lambda: overlay_widget.set_tool('purple'))
-        ch.btnCyan.clicked.connect(lambda: overlay_widget.set_tool('cyan'))
+    ch.btnRed.clicked.connect(lambda: overlay_widget.set_tool('red'))
+    ch.btnGreen.clicked.connect(lambda: overlay_widget.set_tool('green'))
+    ch.btnBlue.clicked.connect(lambda: overlay_widget.set_tool('blue'))
+    ch.btnYellow.clicked.connect(lambda: overlay_widget.set_tool('yellow'))
+    ch.btnPurple.clicked.connect(lambda: overlay_widget.set_tool('purple'))
+    ch.btnCyan.clicked.connect(lambda: overlay_widget.set_tool('cyan'))
 
-        ch.actClear.triggered.connect(overlay_widget.clear)
-        ch.actUndo.triggered.connect(overlay_widget.undo)
-        ch.actRedo.triggered.connect(overlay_widget.redo)
-        ch.actClose.triggered.connect(sys.exit)
-        ch.actDrawing.toggled.connect(app.update_grab)
+    ch.actClear.triggered.connect(overlay_widget.clear)
+    ch.actUndo.triggered.connect(overlay_widget.undo)
+    ch.actRedo.triggered.connect(overlay_widget.redo)
+    ch.actClose.triggered.connect(sys.exit)
+    ch.actDrawing.toggled.connect(overlay_widget.update_grab)
 
-        app.grab_updated.connect(ch.actDrawing.setChecked)
+    overlay_widget.grab_updated.connect(ch.actDrawing.setChecked)
+
+    return window
+
+def make_overlay_widget():
+    w = OverlayWidget()
+
+    for screen in reversed(app.screens()):
+        print(screen.manufacturer())
+        if screen.manufacturer().startswith(('Wacom', 'Chimei')):
+            geom = screen.geometry()
+            w.move(geom.left(), geom.top())
+            w.resize(geom.width(), geom.height())
+
+    return w
 
 class Application(QApplication):
-    grab_updated = Signal(bool)
-
     def __init__(self, *args):
         super().__init__(*args)
         self._grabbing_mouse = False
@@ -361,10 +384,10 @@ class Application(QApplication):
 
     def event(self, e):
         if e.type() == QEvent.TabletEnterProximity:
-            print('enter', toolbox.window.geometry(), QCursor.pos())
-            if toolbox.window.geometry().contains(QCursor.pos()):
+            print('enter', toolbox.geometry(), QCursor.pos())
+            if toolbox.geometry().contains(QCursor.pos()):
                 return False
-            self.update_grab(True)
+            overlay_widget.update_grab(True)
             return True
         elif e.type() == QEvent.TabletLeaveProximity:
             print('leave')
@@ -374,41 +397,16 @@ class Application(QApplication):
             return True
         return False
 
-    def update_grab(self, grab):
-        if grab:
-            if not toolbox.overlay_widget.tool:
-                return False
-            self._grabbing_mouse = True
-            w.grabMouse()
-        else:
-            w.releaseMouse()
-            self._grabbing_mouse = False
-            QCursor.setPos(self._last_cursor_pos)
-        self.grab_updated.emit(self._grabbing_mouse)
-
 
 if __name__ == '__main__':
     app = Application(sys.argv)
-    w = OverlayWidget()
+    overlay_widget = make_overlay_widget()
 
-    for screen in app.screens():
-        print(screen.manufacturer())
-        if screen.manufacturer().startswith('Wacom'):
-            geom = screen.geometry()
-            w.move(geom.left(), geom.top())
-            w.resize(geom.width(), geom.height())
-            break
-        if screen.manufacturer().startswith('Chimei Innolux Corporation'):
-            geom = screen.geometry()
-            w.move(geom.left(), geom.top())
-            w.resize(geom.width(), geom.height())
-            break
+    overlay_widget.showFullScreen()
 
-    w.showFullScreen()
-
-    toolbox = ToolboxWindow(w)
-    toolbox.window.show()
-    toolbox.window.move(w.geometry().topLeft())
+    toolbox = make_toolbox_window(overlay_widget)
+    toolbox.show()
+    toolbox.move(overlay_widget.geometry().topLeft())
 
     app._toolbox = toolbox
 
