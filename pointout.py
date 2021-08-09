@@ -22,7 +22,6 @@ class Overlay():
             )
         else:
             self.rect = None
-        self.blend_with_next = False
 
     def __repr__(self):
         return f'<Overlay {self.rect}>'
@@ -125,22 +124,8 @@ class OverlayWidget(QWidget):
         self.tool = self.tools['marker']
         self.last_point = 0
 
-    def _handle_timeout(self):
-        self.anim_update()
-        if self.scribble_parts:
-            del self.scribble_parts[0]
-        self.scribble_parts.append(Overlay())
-        if self.current_part:
-            for part in self.scribble_parts:
-                part.add(self.current_part)
-            if not self.scribbles:
-                self.scribbles.append(Overlay())
-            self.scribbles[-1].add(self.current_part)
-            self.current_part = None
-        self.anim_update()
-
     def anim_update(self):
-        if self.current_wet and self.current_wet.rect is not None:
+        if self.current_wet.rect is not None:
             with self.current_wet.painter_context() as painter:
                 painter.setBrush(QColor(0, 0, 0, 255))
                 painter.setPen(QPen(0))
@@ -157,17 +142,7 @@ class OverlayWidget(QWidget):
         canvas = None
         for scribble in self.scribbles:
             if scribble.rect:
-                if scribble.blend_with_next:
-                    if canvas is None:
-                        canvas = Overlay()
-                    canvas.add(scribble)
-                else:
-                    if canvas:
-                        canvas.add(scribble)
-                        canvas.paint(painter)
-                        canvas = None
-                    else:
-                        scribble.paint(painter)
+                scribble.paint(painter)
         if canvas:
             canvas.paint(painter)
         painter.setOpacity(1)
@@ -194,12 +169,9 @@ class OverlayWidget(QWidget):
 
     def start_line(self, pos):
         self.last_point = pos
-        if self.current_wet.rect and self.scribbles:
-            self.scribbles[-1].blend_with_next = True
         self.scribbles.append(Overlay())
 
     def add_point(self, pos, *, pressure=0.5, erase=False):
-        print(pos)
         tool = self.tool
         if self.tool is None:
             return
@@ -221,21 +193,6 @@ class OverlayWidget(QWidget):
             self.update(update_rect)
         self.last_point = pos
         self.update_wet()
-
-    def keyPressEvent(self, event):
-        print(event)
-        if event.key() == Qt.Key_Escape:
-            app.update_grab(False)
-            return True
-        return super().keyPressEvent(event)
-
-    def paint(self, painter, e):
-        if not self.last_point:
-            return
-        last_pos, last_pressure = self.last_point
-        painter.drawLine(last_pos, e.posF())
-        self.update(QRect(last_pos.toPoint(), e.pos()).normalized().adjusted(
-            -MAX_RADIUS, -MAX_RADIUS, MAX_RADIUS, MAX_RADIUS))
 
     def set_tool(self, tool_name):
         self.tool = self.tools[tool_name]
@@ -363,11 +320,10 @@ class ToolboxWindow(QObject):
             | Qt.WindowStaysOnTopHint
         )
         self.window.resize(0, 0)
-        tools = [Marker(), Eraser()]
 
         ch = WidgetFinder(self.window)
 
-        ch.btnDisable.clicked.connect(lambda: overlay_widget.unset_tool())
+        ch.btnDisable.clicked.connect(overlay_widget.unset_tool)
         ch.btnMarker.clicked.connect(lambda: overlay_widget.set_tool('marker'))
         ch.btnHighlighter.clicked.connect(lambda: overlay_widget.set_tool('highlighter'))
         ch.btnEraser.clicked.connect(lambda: overlay_widget.set_tool('eraser'))
@@ -379,20 +335,13 @@ class ToolboxWindow(QObject):
         ch.btnPurple.clicked.connect(lambda: overlay_widget.set_tool('purple'))
         ch.btnCyan.clicked.connect(lambda: overlay_widget.set_tool('cyan'))
 
-        ch.actClear.triggered.connect(lambda: overlay_widget.clear())
-        ch.actUndo.triggered.connect(lambda: overlay_widget.undo())
-        ch.actRedo.triggered.connect(lambda: overlay_widget.redo())
+        ch.actClear.triggered.connect(overlay_widget.clear)
+        ch.actUndo.triggered.connect(overlay_widget.undo)
+        ch.actRedo.triggered.connect(overlay_widget.redo)
         ch.actClose.triggered.connect(sys.exit)
-        ch.actDrawing.toggled.connect(lambda b: app.update_grab(b))
+        ch.actDrawing.toggled.connect(app.update_grab)
 
-        app.grab_updated.connect(lambda b: ch.actDrawing.setChecked(b))
-
-    def keyPressEvent(self, event):
-        print(event)
-        if event.key() == Qt.Key_Escape:
-            app.update_grab(False)
-            return True
-        return super().keyPressEvent(event)
+        app.grab_updated.connect(ch.actDrawing.setChecked)
 
 class Application(QApplication):
     grab_updated = Signal(bool)
