@@ -9,7 +9,7 @@ from PySide6.QtWidgets import QMainWindow
 from PySide6.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
 from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon, QAction
 from PySide6.QtGui import QUndoStack, QUndoCommand, QStandardItemModel
-from PySide6.QtGui import QStandardItem, QUndoGroup
+from PySide6.QtGui import QStandardItem, QUndoGroup, QPointingDevice
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
 from PySide6.QtCore import Signal, QPointF, QRectF, QSizeF, QItemSelectionModel
@@ -279,7 +279,7 @@ class OverlayWidget(QWidget):
             self.add_point(
                 pos=e.posF(),
                 pressure=e.pressure(),
-                erase=e.pointerType() == QTabletEvent.Eraser,
+                erase=e.pointerType() == QPointingDevice.PointerType.Eraser,
             )
         e.accept()
 
@@ -579,6 +579,7 @@ class Application(QApplication):
             return True
         elif e.type() == QEvent.TabletLeaveProximity:
             print('leave')
+            overlay_widget.update_grab(False)
             return True
         elif e.type() == QEvent.TabletTrackingChange:
             print('track')
