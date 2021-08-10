@@ -156,7 +156,10 @@ class PictureItem(QStandardItem):
         self.undo_stack.push(cmd)
 
     def reset_props(self):
-        self.setText(f"Drawing ({self.undo_stack.index()})")
+        if self.undo_stack.index() == self.undo_stack.count():
+            self.setText(f"Drawing ({self.undo_stack.index()})")
+        else:
+            self.setText(f"Drawing ({self.undo_stack.index()}/{self.undo_stack.count()})")
         if self.scribbles:
             s = self.scribbles[-1]
             if s.final.pixmap:
@@ -167,10 +170,39 @@ class PictureItem(QStandardItem):
             self.setIcon(QIcon())
 
 
+class SignalingProperty:
+    def __init__(self, signal, default=None, *, name=None):
+        self.signal = signal
+        self.default = default
+        self.name = name
+
+    def __set_name__(self, owner, name):
+        if self.name is None:
+            self.name = name
+
+    def __get__(self, instance, owner):
+        assert self.name
+        if instance:
+            return instance.__dict__.get(self.name, self.default)
+        else:
+            return super().__get__(instance, owner)
+
+    def __set__(self, instance, value):
+        assert self.name
+        prev = instance.__dict__.get(self.name, self.default)
+        if value != prev:
+            instance.__dict__[self.name] = value
+            self.signal.__get__(instance, type(instance)).emit(value)
+
+
 class OverlayWidget(QWidget):
     grab_updated = Signal(bool)
     can_clear_changed = Signal(bool)
-    can_clear = True
+    can_undo_changed = Signal(bool)
+    can_redo_changed = Signal(bool)
+    can_clear = SignalingProperty(can_clear_changed)
+    can_undo = SignalingProperty(can_undo_changed)
+    can_redo = SignalingProperty(can_redo_changed)
     _last_cursor_pos = None
     _grabbing_mouse = False
 
@@ -195,9 +227,11 @@ class OverlayWidget(QWidget):
         self.undo_group = QUndoGroup()
         self.picture_model = QStandardItemModel()
         self.selection_model = QItemSelectionModel(self.picture_model)
-        self.clear()
+        self.clear(force=True)
         self.selection_model.currentChanged.connect(self.picture_switched)
         self.picture_switched()
+        self.undo_group.canUndoChanged.connect(self.update_action_availability)
+        self.undo_group.canRedoChanged.connect(self.update_action_availability)
 
         cursor_bitmap = QBitmap.fromData(QSize(5, 5), bytes((
             0b00000, 0b00000, 0b00100, 0b00000, 0b00000,
@@ -219,15 +253,20 @@ class OverlayWidget(QWidget):
 
     def picture_switched(self):
         self.undo_group.setActiveStack(self.picture.undo_stack)
-        self.check_can_clear()
+        self.update_action_availability()
         self.update()
 
-    def check_can_clear(self):
-        can_clear = bool(self.scribbles)
-        was_can_clear = self.can_clear
-        self.can_clear = can_clear
-        if can_clear != was_can_clear:
-            self.can_clear_changed.emit(can_clear)
+    def update_action_availability(self):
+        self.can_clear = bool(self.undo_stack.count())
+        self.can_undo = (
+            self.undo_stack.canUndo()
+            or self.selection_model.currentIndex().row() > 0
+        )
+        rc = self.picture_model.rowCount()
+        self.can_redo = (
+            self.undo_stack.canRedo()
+            or self.selection_model.currentIndex().row() < rc - 1
+        )
 
     @property
     def picture(self):
@@ -292,7 +331,7 @@ class OverlayWidget(QWidget):
     def start_line(self, pos):
         self.last_point = pos
         self.picture.start_scribble()
-        self.check_can_clear()
+        self.update_action_availability()
 
     def add_point(self, pos, *, pressure=0.5, erase=False):
         tool = self.tool
@@ -318,8 +357,8 @@ class OverlayWidget(QWidget):
         self.picture.reset_props()
         self.update_wet()
 
-    def clear(self):
-        if self.can_clear:
+    def clear(self, *, force=False):
+        if force or self.can_clear:
             pi = PictureItem(self)
             idx = self.selection_model.currentIndex()
             if idx:
@@ -332,10 +371,42 @@ class OverlayWidget(QWidget):
             )
 
     def undo(self):
-        self.undo_stack.undo()
+        if self.undo_stack.canUndo():
+            self.undo_stack.undo()
+        elif self.can_undo:
+            idx = self.selection_model.currentIndex()
+            if idx.row() > 0:
+                idx = self.picture_model.index(idx.row() - 1, 0)
+                self.selection_model.setCurrentIndex(
+                    idx,
+                    QItemSelectionModel.ClearAndSelect,
+                )
 
     def redo(self):
-        self.undo_stack.redo()
+        if self.undo_stack.canRedo():
+            self.undo_stack.redo()
+        elif self.can_redo:
+            idx = self.selection_model.currentIndex()
+            if idx.row() < self.picture_model.rowCount() - 1:
+                idx = self.picture_model.index(idx.row() + 1, 0)
+                self.selection_model.setCurrentIndex(
+                    idx,
+                    QItemSelectionModel.ClearAndSelect,
+                )
+
+    def create_undo_action(self):
+        act = QAction('Undo')
+        act.triggered.connect(self.undo)
+        act.setEnabled(False)
+        self.can_undo_changed.connect(act.setEnabled)
+        return act
+
+    def create_redo_action(self):
+        act = QAction('Redo')
+        act.triggered.connect(self.redo)
+        act.setEnabled(False)
+        self.can_redo_changed.connect(act.setEnabled)
+        return act
 
     def update_wet(self, seconds=1):
         self.wet_end = time.monotonic() + seconds
@@ -519,10 +590,10 @@ def make_toolbox_window(overlay_widget):
         return act
 
     for action_factory, icon, shortcut in (
-        (overlay_widget.undo_group.createUndoAction, 'edit-undo-symbolic', 'Z'),
-        (overlay_widget.undo_group.createRedoAction, 'edit-redo-symbolic', 'Y'),
+        (overlay_widget.create_undo_action, 'edit-undo-symbolic', 'Z'),
+        (overlay_widget.create_redo_action, 'edit-redo-symbolic', 'Y'),
     ):
-        act = action_factory(window)
+        act = action_factory()
         act.setIcon(QIcon.fromTheme(icon))
         act.setShortcut(shortcut)
         window.shortcut_to_action[shortcut] = act.trigger
