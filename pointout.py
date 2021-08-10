@@ -1,6 +1,7 @@
 import sys
 import contextlib
 import time
+import threading
 
 from PySide6.QtWidgets import QApplication, QWidget, QToolButton, QSizePolicy
 from PySide6.QtWidgets import QUndoView, QHBoxLayout, QVBoxLayout, QListView
@@ -9,9 +10,12 @@ from PySide6.QtGui import QPainter, QColor, QPixmap, QPen, QTabletEvent
 from PySide6.QtGui import QPainterPath, QCursor, QBitmap, QIcon, QAction
 from PySide6.QtGui import QUndoStack, QUndoCommand, QStandardItemModel
 from PySide6.QtGui import QStandardItem, QUndoGroup
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtCore import Qt, QEvent, QRect, QTimer, QFile, QObject, QSize
 from PySide6.QtCore import Signal, QPointF, QRectF, QSizeF, QItemSelectionModel
 from PySide6.QtUiTools import QUiLoader
+
+import global_shortcuts
 
 MAX_RADIUS = 100
 
@@ -453,6 +457,7 @@ def make_toolbox_window(overlay_widget):
     window.resize(0, 0)
     central = QWidget()
     window.setCentralWidget(central)
+    window.shortcut_to_action = {}
     main_layout = QVBoxLayout()
     central.setLayout(main_layout)
 
@@ -478,6 +483,7 @@ def make_toolbox_window(overlay_widget):
         layout.addWidget(btn)
         if activate:
             btn.setChecked(True)
+        window.shortcut_to_action[shortcut] = btn.click
         btn.clicked.connect(tool_setter(tool))
 
     layout = add_layout()
@@ -490,6 +496,7 @@ def make_toolbox_window(overlay_widget):
         )
         layout.addWidget(btn)
         btn.setToolTip(name)
+        window.shortcut_to_action[str(i)] = btn.click
         btn.clicked.connect(tool_setter(tool))
 
     toolbar = window.addToolBar("Main toolbar")
@@ -499,6 +506,7 @@ def make_toolbox_window(overlay_widget):
     act_draw.setShortcut('Esc')
     act_draw.toggled.connect(overlay_widget.update_grab)
     overlay_widget.grab_updated.connect(act_draw.setChecked)
+    window.shortcut_to_action['^'] = act_draw.toggle
     toolbar.addAction(act_draw)
 
     def add_action(text, func, icon, shortcut=None):
@@ -506,6 +514,7 @@ def make_toolbox_window(overlay_widget):
         act.triggered.connect(func)
         if shortcut:
             act.setShortcut(shortcut)
+            window.shortcut_to_action[shortcut] = act.trigger
         toolbar.addAction(act)
         return act
 
@@ -516,6 +525,7 @@ def make_toolbox_window(overlay_widget):
         act = action_factory(window)
         act.setIcon(QIcon.fromTheme(icon))
         act.setShortcut(shortcut)
+        window.shortcut_to_action[shortcut] = act.trigger
         toolbar.addAction(act)
 
     clr = add_action('Clear', overlay_widget.clear, 'document-new-symbolic', 'Q')
@@ -560,6 +570,7 @@ class Application(QApplication):
         self._timer.start(100)
 
     def event(self, e):
+        print(e)
         if e.type() == QEvent.TabletEnterProximity:
             print('enter', toolbox.geometry(), QCursor.pos())
             if toolbox.geometry().contains(QCursor.pos()):
@@ -572,11 +583,35 @@ class Application(QApplication):
         elif e.type() == QEvent.TabletTrackingChange:
             print('track')
             return True
+        elif e.type() == QEvent.User:
+            print('app handling', e.key)
+            try:
+                act = toolbox.shortcut_to_action[e.key]
+            except KeyError:
+                print(f'no {e.key}...')
+            else:
+                print(act)
+                act()
         return False
 
 
+def watch_shortcuts(app, widget):
+    def post(i):
+        key = "123456MHEQZY^"[i]
+        app.postEvent(app, MyEvent(key))
+    global_shortcuts.watch_shortcuts(post)
+
+class MyEvent(QEvent):
+    def __init__(self, key):
+        super().__init__(QEvent.User)
+        self.key = key
+
+    def __repr__(self):
+        return f'my event! {self.key}'
+
 if __name__ == '__main__':
     app = Application(sys.argv)
+
     overlay_widget = make_overlay_widget()
 
     overlay_widget.showFullScreen()
@@ -587,6 +622,10 @@ if __name__ == '__main__':
 
     app._toolbox = toolbox
 
-    print(QIcon.themeSearchPaths())
+    threading.Thread(
+        target=watch_shortcuts,
+        args=(app, overlay_widget, ),
+        daemon=True
+    ).start()
 
     sys.exit(app.exec())
