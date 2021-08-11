@@ -577,7 +577,7 @@ def make_toolbox_window(overlay_widget):
     act_draw.setShortcut('Esc')
     act_draw.toggled.connect(overlay_widget.update_grab)
     overlay_widget.grab_updated.connect(act_draw.setChecked)
-    window.shortcut_to_action['^'] = act_draw.toggle
+    window.shortcut_to_action['Esc'] = act_draw.toggle
     toolbar.addAction(act_draw)
 
     def add_action(text, func, icon, shortcut=None):
@@ -668,8 +668,7 @@ class Application(QApplication):
 
 
 def watch_shortcuts(app, widget):
-    def post(i):
-        key = "123456MHEQZY^"[i]
+    def post(key):
         app.postEvent(app, MyEvent(key))
     global_shortcuts.watch_shortcuts(post)
 

@@ -5,6 +5,7 @@
 
 typedef struct {
     int keysym;
+    char *keyname;
     unsigned int keycode;
 } keymap_t;
 
@@ -22,20 +23,21 @@ watch_shortcuts(PyObject *self, PyObject *callable)
     int             keyboard_mode   = GrabModeAsync;
 
     keymap_t keymap[] = {
-        {XK_1, 0},
-        {XK_2, 0},
-        {XK_3, 0},
-        {XK_4, 0},
-        {XK_5, 0},
-        {XK_6, 0},
-        {XK_M, 0},
-        {XK_H, 0},
-        {XK_E, 0},
-        {XK_Q, 0},
-        {XK_Z, 0},
-        {XK_Y, 0},
-        {XK_Escape, 0},
-        {0, 0}
+        {XK_1, "1", 0},
+        {XK_2, "2", 0},
+        {XK_3, "3", 0},
+        {XK_4, "4", 0},
+        {XK_5, "5", 0},
+        {XK_6, "6", 0},
+        {XK_M, "M", 0},
+        {XK_H, "H", 0},
+        {XK_E, "E", 0},
+        {XK_Q, "Q", 0},
+        {XK_Z, "Z", 0},
+        {XK_Y, "Y", 0},
+        {XK_D, "D", 0},
+        {XK_Escape, "Esc", 0},
+        {0, 0, 0}
     };
 
     for (int i=0; keymap[i].keysym; i++) {
@@ -60,13 +62,13 @@ watch_shortcuts(PyObject *self, PyObject *callable)
                     printf("Trying hot key %d...\n", i);
                     if (keymap[i].keycode == ev.xkey.keycode) {
                         printf("Hot key %d pressed!\n", i);
-                        PyObject *code = PyLong_FromLong(i);
-                        if (code == NULL) {
+                        PyObject *name = PyUnicode_FromString(keymap[i].keyname);
+                        if (name == NULL) {
                             shouldQuit = 1;
                             break;
                         }
-                        PyObject *result = PyObject_CallOneArg(callable, code);
-                        Py_XDECREF(code);
+                        PyObject *result = PyObject_CallOneArg(callable, name);
+                        Py_XDECREF(name);
                         if (result == NULL) {
                             shouldQuit = 1;
                             break;
