@@ -681,7 +681,8 @@ class MyEvent(QEvent):
     def __repr__(self):
         return f'my event! {self.key}'
 
-if __name__ == '__main__':
+def main():
+    global app, toolbox, overlay_widget
     app = Application(sys.argv)
 
     overlay_widget = make_overlay_widget()
@@ -701,3 +702,6 @@ if __name__ == '__main__':
     ).start()
 
     sys.exit(app.exec())
+
+if __name__ == '__main__':
+    main()

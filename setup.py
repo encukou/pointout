@@ -1,4 +1,3 @@
-# to build global_shortcuts
 from setuptools import setup, Extension
 
 module1 = Extension(
@@ -10,8 +9,17 @@ module1 = Extension(
 )
 
 setup (
-    name='global_shortcuts',
-    version='0.0',
-    description='global_shortcuts',
+    name='pointout',
+    version='0.1',
+    description='pointout',
     ext_modules=[module1],
+    python_modules=["pointout"],
+    install_requires=[
+        'pyside6',
+    ],
+    entry_points = {
+        'console_scripts': [
+            'pointout=pointout:main',
+        ],
+    }
 )
