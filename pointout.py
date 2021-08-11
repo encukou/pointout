@@ -578,6 +578,7 @@ def make_toolbox_window(overlay_widget):
     act_draw.toggled.connect(overlay_widget.update_grab)
     overlay_widget.grab_updated.connect(act_draw.setChecked)
     window.shortcut_to_action['Esc'] = act_draw.toggle
+    window.shortcut_to_action['D'] = act_draw.toggle
     toolbar.addAction(act_draw)
 
     def add_action(text, func, icon, shortcut=None):
